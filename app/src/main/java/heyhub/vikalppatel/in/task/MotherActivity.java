@@ -7,6 +7,7 @@ import android.support.v7.widget.AppCompatButton;
 import android.support.v7.widget.AppCompatEditText;
 import android.support.v7.widget.AppCompatTextView;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.View;
 
 import org.json.JSONArray;
@@ -16,6 +17,8 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 
 public class MotherActivity extends AppCompatActivity {
 
@@ -38,6 +41,9 @@ public class MotherActivity extends AppCompatActivity {
     private double minDistance;
     private double minTempDistance;
     private int indexOfMinVertice;
+
+    private double secondMinDistance;
+    private ArrayList<Geopoint> distanceWithVertice = new ArrayList<>();
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -118,8 +124,18 @@ public class MotherActivity extends AppCompatActivity {
                         if (!TextUtils.isEmpty(mLatitudeEt.getText().toString())
                                 && !TextUtils.isEmpty(mLongitudeEt.getText().toString()) && !TextUtils.isEmpty(mAccuracyEt.getText().toString())) {
 
+                            distanceWithVertice.clear();
+
                             boolean isLocationWithinArea = isLocationWithinArea(Double.parseDouble(mLatitudeEt.getText().toString()),
                                     Double.parseDouble(mLongitudeEt.getText().toString()), Double.parseDouble(mAccuracyEt.getText().toString()));
+
+
+                            boolean isPointInGeoFence = isPointInPolygon(new Geopoint(Double.parseDouble(mLatitudeEt.getText().toString()),
+                                    Double.parseDouble(mLongitudeEt.getText().toString())), vertices);
+
+                            if (isPointInGeoFence) {
+                                isLocationWithinArea = isPointInGeoFence;
+                            }
 
                             mResultsTv.setText("isLocationWithinArea :: " + String.valueOf(isLocationWithinArea));
 
@@ -127,7 +143,7 @@ public class MotherActivity extends AppCompatActivity {
                                     " lon: " + mLongitudeEt.getText().toString() + " & accuracy: " + mAccuracyEt.getText().toString()
                                     + " :: " + isLocationWithinArea + "\n\n"
                                     + "NearBy Point : " + vertices.get(indexOfMinVertice).getLatitude() + ", " + vertices.get(indexOfMinVertice).getLongitude()
-                                    + " which is at " + minDistance + "m");
+                                    + " which is at " + minDistance + "m.");
 
                         } else {
                             if (TextUtils.isEmpty(mLatitudeEt.getText().toString())) {
@@ -155,10 +171,9 @@ public class MotherActivity extends AppCompatActivity {
     }
 
     /**
-     *
-     * @param latitude : Latitude of Given Point
+     * @param latitude  : Latitude of Given Point
      * @param longitude : Longitude of Given Point
-     * @param accuracy : Distance in meter which can be allowed for geo fencing
+     * @param accuracy  : Distance in meter which can be allowed for geo fencing
      * @return
      */
     private boolean isLocationWithinArea(Double latitude, Double longitude, Double accuracy) {
@@ -169,12 +184,33 @@ public class MotherActivity extends AppCompatActivity {
                     if (i == 0) {
                         minDistance = minTempDistance;
                     }
+
+                    distanceWithVertice.add(new Geopoint(minTempDistance, Double.parseDouble(String.valueOf(i))));
                     /*Log.e("minTempDistance:" + i, "" + minTempDistance);*/
                     if (minTempDistance < minDistance) {
                         indexOfMinVertice = i;
                         minDistance = minTempDistance;
                     }
                 }
+            }
+
+            if (distanceWithVertice != null && distanceWithVertice.size() > 0) {
+                Collections.sort(distanceWithVertice, new GeopointSort());
+            }
+
+
+            try {
+                Geopoint mTempGeoPoint = getMinimumDistanceIntersectionOfPoint();
+                Double mTemp = distanceBetweenVertices(latitude, longitude, mTempGeoPoint.getLatitude(), mTempGeoPoint.getLongitude());
+
+                Log.e("mTempGeoPoint:", "" + mTempGeoPoint.getLatitude() + ", " + mTempGeoPoint.getLongitude()
+                        + " -> Distance : " + mTemp + "m");
+
+                if (mTemp > 0) {
+                    minDistance = mTemp;
+                }
+            } catch (Exception e) {
+                Log.e("MiniIntersection", e.toString());
             }
 
             /*Log.e("minDistance: ", "" + minDistance + "m");
@@ -188,7 +224,7 @@ public class MotherActivity extends AppCompatActivity {
                         && longitude > vertices.get(indexOfMinVertice).getLongitude()) {//inside
                     return true;
                 } else {
-                    if (accuracy - minDistance > 0) {
+                    if (accuracy - minDistance >= 0) {
                         return true;
                     }
                 }
@@ -198,7 +234,7 @@ public class MotherActivity extends AppCompatActivity {
                         && vertices.get(indexOfMinVertice).getLongitude() < longitude) {//inside
                     return true;
                 } else {
-                    if (accuracy - minDistance > 0) {
+                    if (accuracy - minDistance >= 0) {
                         return true;
                     }
                 }
@@ -247,6 +283,76 @@ public class MotherActivity extends AppCompatActivity {
         return Math.round(dist);
     }
 
+
+    private boolean isPointInPolygon(Geopoint tap, ArrayList<Geopoint> vertices) {
+        int intersectCount = 0;
+        for (int j = 0; j < vertices.size() - 1; j++) {
+            if (rayCastIntersect(tap, vertices.get(j), vertices.get(j + 1))) {
+                intersectCount++;
+            }
+        }
+
+        return (intersectCount % 2) == 1; // odd = inside, even = outside;
+    }
+
+    /**
+     * Using Ray Intersect Algorithm
+     * @param tap
+     * @param vertA
+     * @param vertB
+     * @return
+     */
+    private boolean rayCastIntersect(Geopoint tap, Geopoint vertA, Geopoint vertB) {
+
+        double aY = vertA.getLatitude();
+        double bY = vertB.getLatitude();
+        double aX = vertA.getLongitude();
+        double bX = vertB.getLongitude();
+        double pY = tap.getLatitude();
+        double pX = tap.getLongitude();
+
+        if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) {
+            return false; // a and b can't both be above or below pt.y, and a or b must be east of pt.x
+        }
+
+        double m = (aY - bY) / (aX - bX);               // Rise over run
+        double bee = (-aX) * m + aY;                // y = mx + b
+        double x = (pY - bee) / m;                  // algebra is neat!
+
+        return x > pX;
+    }
+
+
+    /**
+     * Get the GeoPoint on GeoFence from where our point P is at minimum distance
+     * by getting the two nearest point.
+     * @return
+     */
+    private Geopoint getMinimumDistanceIntersectionOfPoint() {
+        Double mPercentageU = 0.0;
+        try {
+            Double x1 = vertices.get((int) Math.round(distanceWithVertice.get(0).getLongitude())).getLatitude();
+            Double y1 = vertices.get((int) Math.round(distanceWithVertice.get(0).getLongitude())).getLongitude();
+            Double x2 = vertices.get((int) Math.round(distanceWithVertice.get(1).getLongitude())).getLatitude();
+            Double y2 = vertices.get((int) Math.round(distanceWithVertice.get(1).getLongitude())).getLongitude();
+            Double x3 = Double.parseDouble(mLatitudeEt.getText().toString());
+            Double y3 = Double.parseDouble(mLongitudeEt.getText().toString());
+
+            if (distanceWithVertice != null && distanceWithVertice.size() > 1) {
+                mPercentageU = ((x3 - x1) * (x2 - x1) + (y3 - y1) * (y2 - y1)) / (((x2 - x1) * (x2 - x1)) + ((y2 - y1) * (y2 - y1)));
+
+                if (mPercentageU > 0) {
+                    Double mLat = x1 + mPercentageU * (x2 - x1);
+                    Double mLon = y1 + mPercentageU * (y2 - y1);
+                    return new Geopoint(mLat, mLon);
+                }
+            }
+        } catch (Exception e) {
+            Log.e("getMidPoint", e.toString());
+        }
+        return null;
+    }
+
     /*:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::*/
     /*::  This function converts decimal degrees to radians             :*/
     /*:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::*/
@@ -275,5 +381,20 @@ public class MotherActivity extends AppCompatActivity {
         }
 
         return str.toString();
+    }
+
+    public class GeopointSort implements Comparator<Geopoint> {
+        @Override
+        public int compare(Geopoint Obj1, Geopoint Obj2) {
+            try {
+                if (Obj1.getLatitude() > Obj2.getLatitude()) {
+                    return 1;
+                } else {
+                    return -1;
+                }
+            } catch (Exception e) {
+                return -1;
+            }
+        }
     }
 }
